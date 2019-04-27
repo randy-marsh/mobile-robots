@@ -1,0 +1,11 @@
+<launch>
+
+	<node pkg="gmapping" name="slam_gmapping" type="slam_gmapping" output="screen">
+
+		<param name="base_frame" value="/robot0"/>
+		<param name="maxRange" value="9" />
+		<param name="maxURange" value="8" />
+		<remap from="/scan" to="/robot0/laser_1" />
+		<remap from="/map" to="/gmapping_map" />
+  </node>
+</launch>
