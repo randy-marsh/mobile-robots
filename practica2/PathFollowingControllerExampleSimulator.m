@@ -27,9 +27,29 @@ path = [14.00    11.00;
     19.00   19.00];
 
 % Set the current location and the goal location of the robot as defined by the path
+
 robotCurrentLocation = path(1,:);
 robotGoal = path(end,:);
+% init ros
+rosinit('http://172.22.31.206:11311')
 
+tftree = rostf;
+
+% Pause for a second for the transformation tree object to finish
+% initialization.
+pause(1);
+
+scanSub = rossubscriber('/robot0/laser_1');
+[velPub, velMsg] = rospublisher('/robot0/cmd_vel');
+scanMsg = receive(scanSub);
+% Get robot pose at the time of sensor reading
+pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
+
+% Convert robot pose to 1x3 vector [x y yaw]
+position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
+orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
+    pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+robotPose = [position, orientation(1)];
 %%
 % Assume an initial robot orientation (the robot orientation is the angle
 % between the robot heading and the positive X-axis, measured
@@ -38,37 +58,12 @@ initialOrientation = 0;
 
 %%
 % Define the current pose for the robot [x y theta]
-robotCurrentPose = [robotCurrentLocation initialOrientation];
+robotCurrentPose = [position orientation(1)];
 
-%% Initialize the Robot Simulator
-% A simple robot simulator is used in this example that updates and
-% returns the pose of the differential drive robot for given control inputs. An external
-% simulator or a physical robot will require a localization mechanism to
-% provide an updated pose of the robot.
 
-%%
-% Initialize the robot simulator and assign an initial pose. The simulated
-% robot has kinematic equations for the motion of a two-wheeled differential drive robot.
-% The inputs to this simulated robot are linear and angular velocities. It also has plotting
-% capabilities to display the robot's current location and draw the
-% trajectory of the robot.
 
-robotRadius = 0.4;
-robot = ExampleHelperRobotSimulator('emptyMap',2);
-robot.enableLaser(false);
-robot.setRobotSize(robotRadius);
-robot.showTrajectory(true);
-robot.setRobotPose(robotCurrentPose);
 
-%%
-% Visualize the desired path
-plot(path(:,1), path(:,2),'k--d')
-xlim([0 13])
-ylim([0 13])
 
-%%
-% <<path_robot_simulator_part1.png>>
-%
 
 %% Define the Path Following Controller
 % Based on the path defined above and a robot motion model, you need a path
@@ -84,7 +79,7 @@ controller.Waypoints = path;
 %%
 % Set the path following controller parameters. The desired linear
 % velocity is set to 0.3 meters/second for this example.
-controller.DesiredLinearVelocity = 0.3;
+controller.DesiredLinearVelocity = 0.5;
 
 %%
 % The maximum angular velocity acts as a saturation limit for rotational velocity, which is
@@ -113,7 +108,7 @@ controller.LookaheadDistance = 0.5;
 % Note that too small value of the goal radius may cause the robot to miss
 % the goal, which may result in an unexpected behavior near the goal.
 goalRadius = 0.1;
-distanceToGoal = norm(robotCurrentLocation - robotGoal);
+distanceToGoal = norm(position - robotGoal);
 
 %%
 % The |<docid:robotics_ref.buoofp1-1 controller>| object computes control commands for the robot.
@@ -123,19 +118,39 @@ distanceToGoal = norm(robotCurrentLocation - robotGoal);
 % system may be required to update the pose of the robot. The controller runs at 10 Hz.
 controlRate = robotics.Rate(10);
 while( distanceToGoal > goalRadius )
+    % get pose
+    scanMsg = receive(scanSub);
+    % Get robot pose at the time of sensor reading
+    pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
+
+    % Convert robot pose to 1x3 vector [x y yaw]
+    position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
+    orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
+        pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+    robotPose = [position, orientation(1)];
+
     
     % Compute the controller outputs, i.e., the inputs to the robot
-    [v, omega] = controller(robot.getRobotPose);
+    [v, omega] = controller(robotPose);
     
-    % Simulate the robot using the controller outputs.
-    drive(robot, v, omega);
-    
+    % move the robot
+    velMsg.Linear.X = v;
+    velMsg.Angular.Z = omega;
+    send(velPub, velMsg);
+     
     % Extract current location information ([X,Y]) from the current pose of the
-    % robot
-    robotCurrentPose = robot.getRobotPose;
-    
+    scanMsg = receive(scanSub);
+    % Get robot pose at the time of sensor reading
+    pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
+
+    % Convert robot pose to 1x3 vector [x y yaw]
+    position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
+    orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
+        pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+    robotPose = [position, orientation(1)];
+
     % Re-compute the distance to the goal
-    distanceToGoal = norm(robotCurrentPose(1:2) - robotGoal);
+    distanceToGoal = norm(robotPose(1:2) - robotGoal);
     
     waitfor(controlRate);
     
@@ -148,115 +163,5 @@ end
 %%
 % The simulated robot has reached the goal location using the path following
 % controller along the desired path. Close simulation.
-delete(robot)
+rosshutdown
 
-%% Using the Path Following Controller Along with PRM
-% If the desired set of waypoints are computed by a path planner, the path
-% following controller can be used in the same fashion.
-
-% Start Robot Simulator with a simple map
-robot = ExampleHelperRobotSimulator('simpleMap',2);
-robot.enableLaser(false);
-robot.setRobotSize(robotRadius);
-robot.showTrajectory(true);
-
-%%
-% You can compute the |path| using the PRM path planning algorithm. See
-% <docid:robotics_examples.example-PathPlanningExample> for details.
-
-mapInflated = copy(robot.Map);
-inflate(mapInflated,robotRadius);
-prm = robotics.PRM(mapInflated);
-prm.NumNodes = 100;
-prm.ConnectionDistance = 10;
-
-%%
-% Find a path between the start and end location. Note that the |path| will
-% be different due to the probabilistic nature of the PRM algorithm.
-startLocation = [2.0 1.0];
-endLocation = [12.0 10.0];
-path = findpath(prm, startLocation, endLocation)
-
-%%
-% Display the path
-show(prm, 'Map', 'off', 'Roadmap', 'off');
-
-%%
-% <<path_robot_simulator_part2.png>>
-%
-
-%%
-% You defined a path following controller above which you can re-use
-% for computing the control commands of a robot on this map. To
-% re-use the controller and redefine the waypoints while keeping the other
-% information the same, use the |release| function.
-release(controller);
-controller.Waypoints = path;
-
-%%
-% Set current location and the goal of the robot as defined by the path
-robotCurrentLocation = path(1,:);
-robotGoal = path(end,:);
-
-%%
-% Assume an initial robot orientation
-initialOrientation = 0;
-
-%%
-% Define the current pose for robot motion [x y theta]
-robotCurrentPose = [robotCurrentLocation initialOrientation];
-
-%%
-% Reset the current position of the simulated robot to the start of the path.
-robot.setRobotPose(robotCurrentPose);
-
-%%
-% <<path_starting_position_part2.png>>
-%
-%%
-% Compute distance to the goal location
-distanceToGoal = norm(robotCurrentLocation - robotGoal);
-
-%%
-% Define a goal radius
-goalRadius = 0.1;
-
-%%
-% Drive the robot using the controller output on the given map until it
-% reaches the goal. The controller runs at 10 Hz.
-reset(controlRate);
-while( distanceToGoal > goalRadius )
-    
-    % Compute the controller outputs, i.e., the inputs to the robot
-    [v, omega] = controller(robot.getRobotPose);
-    
-    % Simulate the robot using the controller outputs
-    drive(robot, v, omega);
-    
-    % Extract current location information from the current pose
-    robotCurrentPose = robot.getRobotPose;
-    
-    % Re-compute the distance to the goal
-    distanceToGoal = norm(robotCurrentPose(1:2) - robotGoal);
-    
-    waitfor(controlRate);
-end
-
-%%
-% The simulated robot has reached the goal location using the path following
-% controller along the desired path. Stop the robot.
-drive(robot, 0, 0);
-
-%%
-% <<path_completed_path_part2.png>>
-%
-
-%%
-% Close Simulation.
-delete(robot);
-%% See Also
-%
-% * <docid:robotics_examples.example-PathPlanningExample Path Planning in Environments of Different Complexity>
-% * <docid:robotics_examples.example-MappingWithKnownPosesExample Mapping With Known Poses>
-
-displayEndOfDemoMessage(mfilename)
