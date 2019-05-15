@@ -29,9 +29,17 @@ robotPose = [position, orientation(1)];
 % Create a |VectorFieldHistogram| object.
 vfh = robotics.VectorFieldHistogram('UseLidarScan',true);
 % vfh.NumAngularSectors = 5
+vfh.DistanceLimits = [0.15 2]
+vfh.RobotRadius = 0.15
 vfh.SafetyDistance = 0.5
+% vfh.MinTurningRadius = 0.5
+vfh.TargetDirectionWeight = 5
+vfh.CurrentDirectionWeight = 2
+vfh.PreviousDirectionWeight  = 2
+vfh.HistogramThresholds = [2 8]
 %%
 % Input laser scan data and target direction.
+
 
 % %% get scan data
 % scanMsg = receive(scanSub);
@@ -57,7 +65,7 @@ vfh.SafetyDistance = 0.5
 % velMsg.Linear.X = desiredV;
 % velMsg.Angular.Z = w;
 % send(velPub, velMsg);
-goalRadius = 0.1;
+goalRadius = 1;
 distanceToGoal = norm(robotPose(1:2) - robotGoal);
 
 %%
@@ -70,7 +78,7 @@ controlRate = robotics.Rate(10);
 while( distanceToGoal > goalRadius )
     % Extract current location information ([X,Y]) from the current pose of the
     scanMsg = receive(scanSub);
-    scan = lidarScan(scanMsg)
+    scan = lidarScan(scanMsg);
     % Get robot pose at the time of sensor reading
     pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
 
@@ -118,4 +126,8 @@ while( distanceToGoal > goalRadius )
     
 
 end
-rosshutdown;
+% stop robot
+velMsg.Linear.X = 0;
+velMsg.Angular.Z = 0;
+send(velPub, velMsg);
+rosshutdown
