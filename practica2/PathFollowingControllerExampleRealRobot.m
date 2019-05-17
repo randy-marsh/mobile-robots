@@ -30,35 +30,57 @@ path = [14.77    10.93;
 robotCurrentLocation = path(1,:);
 robotGoal = path(end,:);
 % init ros
-rosinit('http://172.22.31.206:11311')
+rosinit('http://172.29.30.176:11311')
+
+% enable driver
+pub_enable=rospublisher('/cmd_motor_state','std_msgs/Int32');
+%declaración mensaje
+msg_enable_motor=rosmessage(pub_enable);
+%activar motores enviando enable_motor = 1
+msg_enable_motor.Data=1;
+send(pub_enable,msg_enable_motor);
 
 tftree = rostf;
 
 % Pause for a second for the transformation tree object to finish
 % initialization.
 pause(1);
-
-scanSub = rossubscriber('/robot0/laser_1');
-[velPub, velMsg] = rospublisher('/robot0/cmd_vel');
-scanMsg = receive(scanSub);
+scanSub = rossubscriber('/scan');
+poseSub = rossubscriber('/pose');
+[velPub, velMsg] = rospublisher('/cmd_vel');
 % Get robot pose at the time of sensor reading
-pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
+pose = receive(poseSub);
 
 % Convert robot pose to 1x3 vector [x y yaw]
-position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
-orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
-    pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+position = [pose.Pose.Pose.Position.X, pose.Pose.Pose.Position.Y];
+    orientation =  quat2eul([pose.Pose.Pose.Orientation.W, pose.Pose.Pose.Orientation.X, ...
+        pose.Pose.Pose.Orientation.Y, pose.Pose.Pose.Orientation.Z], 'ZYX');
 robotPose = [position, orientation(1)];
+robotPose(1) = robotPose(1) +14.77; 
+robotPose(2) = robotPose(2) +10.93; 
+robotPose(3) = robotPose(3) + 0.27;
+
 %%
 % Assume an initial robot orientation (the robot orientation is the angle
 % between the robot heading and the positive X-axis, measured
 % counterclockwise).
-initialOrientation = 0;
+initialOrientation = 0.27
 
 %%
 % Define the current pose for the robot [x y theta]
-robotCurrentPose = [position orientation(1)];
+robotCurrentPose = robotPose;
 
+% Create a |VectorFieldHistogram| object.
+vfh = robotics.VectorFieldHistogram('UseLidarScan',true);
+% vfh.NumAngularSectors = 5
+vfh.DistanceLimits = [0.4 1]
+vfh.RobotRadius = 0.15
+vfh.SafetyDistance = 0.3
+% vfh.MinTurningRadius = 0.5
+vfh.TargetDirectionWeight = 5
+vfh.CurrentDirectionWeight = 2
+vfh.PreviousDirectionWeight  = 2
+vfh.HistogramThresholds = [0.5 1.2]
 
 
 
@@ -78,12 +100,12 @@ controller.Waypoints = path;
 %%
 % Set the path following controller parameters. The desired linear
 % velocity is set to 0.3 meters/second for this example.
-controller.DesiredLinearVelocity = 0.5;
+controller.DesiredLinearVelocity = 0.2;
 
 %%
 % The maximum angular velocity acts as a saturation limit for rotational velocity, which is
 % set at 2 radians/second for this example.
-controller.MaxAngularVelocity = 2;
+controller.MaxAngularVelocity = 1;
 
 %%
 % As a general rule, the lookahead distance should be larger than the desired
@@ -91,7 +113,7 @@ controller.MaxAngularVelocity = 2;
 % lookahead distance is large. In contrast, a small lookahead distance can
 % result in an unstable path following behavior. A value of 0.5 m was chosen
 % for this example.
-controller.LookaheadDistance = 0.5;
+controller.LookaheadDistance = 0.3;
 
 %% Using the Path Following Controller, Drive the Robot over the Desired Waypoints
 % The path following controller provides input control signals for the
@@ -115,38 +137,58 @@ distanceToGoal = norm(position - robotGoal);
 % goal radius. If you are using an external simulator or a physical robot,
 % then the controller outputs should be applied to the robot and a localization
 % system may be required to update the pose of the robot. The controller runs at 10 Hz.
-controlRate = robotics.Rate(10);
+controlRate = robotics.Rate(20);
 while( distanceToGoal > goalRadius )
     % get pose
     scanMsg = receive(scanSub);
+    scan = lidarScan(scanMsg);
+    pose = receive(poseSub);
     % Get robot pose at the time of sensor reading
-    pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
-
     % Convert robot pose to 1x3 vector [x y yaw]
-    position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
-    orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
-        pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+    position = [pose.Pose.Pose.Position.X, pose.Pose.Pose.Position.Y];
+    orientation =  quat2eul([pose.Pose.Pose.Orientation.W, pose.Pose.Pose.Orientation.X, ...
+        pose.Pose.Pose.Orientation.Y, pose.Pose.Pose.Orientation.Z], 'ZYX');
     robotPose = [position, orientation(1)];
+    robotPose(1) = robotPose(1) +14.77; 
+    robotPose(2) = robotPose(2) +10.93; 
+    robotPose(3) = robotPose(3) + 0.27;
 
-    
-    % Compute the controller outputs, i.e., the inputs to the robot
-    [v, omega] = controller(robotPose);
-    
-    % move the robot
-    velMsg.Linear.X = v;
-    velMsg.Angular.Z = omega;
+
+    % get target Dir
+    [targetDirDeg, targetDirRad] = getAngle(robotPose(1:2), robotGoal);
+    targetDir = targetDirRad - robotPose(3);
+    % Compute an obstacle-free steering direction.
+    steeringDir = vfh(scan,targetDir)
+     % Calculate velocities
+    if ~isnan(steeringDir) % If steering direction is valid
+        desiredV = 0.2;
+        w = exampleHelperComputeAngularVelocity(steeringDir, 1);
+    else
+        
+        % Compute the controller outputs, i.e., the inputs to the robot
+        [desiredV, w] = controller(robotPose);
+    end
+    velMsg.Linear.X = desiredV;
+    velMsg.Angular.Z = w;
     send(velPub, velMsg);
-     
+    
+    waitfor(controlRate);
     % Extract current location information ([X,Y]) from the current pose of the
     scanMsg = receive(scanSub);
+    scan = lidarScan(scanMsg);
+    pose = receive(poseSub);
     % Get robot pose at the time of sensor reading
-    pose = getTransform(tftree, 'map', 'robot0', scanMsg.Header.Stamp, 'Timeout', 2);
+   
 
     % Convert robot pose to 1x3 vector [x y yaw]
-    position = [pose.Transform.Translation.X, pose.Transform.Translation.Y];
-    orientation =  quat2eul([pose.Transform.Rotation.W, pose.Transform.Rotation.X, ...
-        pose.Transform.Rotation.Y, pose.Transform.Rotation.Z], 'ZYX');
+    position = [pose.Pose.Pose.Position.X, pose.Pose.Pose.Position.Y];
+    orientation =  quat2eul([pose.Pose.Pose.Orientation.W, pose.Pose.Pose.Orientation.X, ...
+        pose.Pose.Pose.Orientation.Y, pose.Pose.Pose.Orientation.Z], 'ZYX');
     robotPose = [position, orientation(1)];
+    robotPose(1) = robotPose(1) +14.77; 
+    robotPose(2) = robotPose(2) +10.93; 
+    robotPose(3) = robotPose(3) + 0.27;
+
 
     % Re-compute the distance to the goal
     distanceToGoal = norm(robotPose(1:2) - robotGoal);
@@ -162,5 +204,9 @@ end
 %%
 % The simulated robot has reached the goal location using the path following
 % controller along the desired path. Close simulation.
+% stop robot
+velMsg.Linear.X = 0;
+velMsg.Angular.Z = 0;
+send(velPub, velMsg);
 rosshutdown
 

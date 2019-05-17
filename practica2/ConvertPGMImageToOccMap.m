@@ -25,4 +25,4 @@ imageOccupancy = 1 - imageNorm;
 % resolution is 20 cells per meter.
 map = robotics.OccupancyGrid(imageOccupancy,20);
 show(map)
-%save 'C:\Users\Juan\Documents\MUII\robotizados\practicas\matlabscripts\gmapping\prueba_1pasada.mat' map
+save 'C:\Users\Juan\Documents\MUII\robotizados\practicas\repo\practica2\mapa_real_ajustado_limpio.mat' map
